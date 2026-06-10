@@ -1,0 +1,14 @@
+# Secretos
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Datos / salidas
+*.gpkg
+*.geojson.tmp
+
+# Docker
+postgres_data/
