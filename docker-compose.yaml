@@ -1,4 +1,5 @@
 services:
+
   postgis:
     image: postgis/postgis:16-3.4
     container_name: geogame_postgis
@@ -11,6 +12,26 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+
+  mage:
+    image: mageai/mageai:latest
+    container_name: geogame_mage
+    command: mage start geogame_project
+    env_file:
+      - .env
+    environment:
+      USER_CODE_PATH: /home/src/geogame_project
+      POSTGRES_USER: mageuser
+      POSTGRES_PASSWORD: magepass
+      POSTGRES_HOST: geogame_postgis
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: magedb
+    ports:
+      - "6800:6789"
+    volumes:
+      - ./mage_project:/home/src/geogame_project
+    depends_on:
+      - postgis
 
 volumes:
   postgres_data:

@@ -1,0 +1,22 @@
+blocks:
+- uuid: fetch_cloudflare_iqi
+  type: data_loader
+  language: python
+  downstream_blocks:
+  - save_iqi_measurements
+  upstream_blocks: []
+  executor_type: local_python
+- uuid: save_iqi_measurements
+  type: data_exporter
+  language: python
+  downstream_blocks: []
+  upstream_blocks:
+  - fetch_cloudflare_iqi
+  executor_type: local_python
+description: >
+  Captura latencia IQI (p25/p50/p75) de Cloudflare Radar
+  para los 6 países LATAM y la persiste en iqi_measurements (PostGIS).
+name: cloudflare_ingestion
+uuid: cloudflare_ingestion
+type: python
+executor_type: local_python
