@@ -1,0 +1,22 @@
+blocks:
+- uuid: fetch_riot_status
+  type: data_loader
+  language: python
+  downstream_blocks:
+  - save_riot_status
+  upstream_blocks: []
+  executor_type: local_python
+- uuid: save_riot_status
+  type: data_exporter
+  language: python
+  downstream_blocks: []
+  upstream_blocks:
+  - fetch_riot_status
+  executor_type: local_python
+description: >
+  Captura incidents y maintenances de la plataforma LAN (la1/la2)
+  desde Riot LoL Status v4 y los persiste en riot_status (PostGIS).
+name: riot_ingestion
+uuid: riot_ingestion
+type: python
+executor_type: local_python
