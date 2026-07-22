@@ -7,9 +7,10 @@ las métricas, clic en el ranking resalta el país en el mapa.
 """
 
 import os
+import time
 
+import folium
 import pandas as pd
-import pydeck as pdk
 import plotly.express as px
 import plotly.graph_objects as go
 import requests
@@ -55,17 +56,18 @@ def select_subregion(name: str | None):
 
 # ── Data fetching ──────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
-def fetch_json(endpoint: str, params: dict | None = None):
-    r = requests.get(f"{API_URL}{endpoint}", params=params, timeout=15)
+def fetch_json(endpoint: str, params: tuple | None = None):
+    r = requests.get(
+        f"{API_URL}{endpoint}",
+        params=dict(params) if params else None,
+        timeout=15,
+    )
     r.raise_for_status()
     return r.json()
 
 
-@st.cache_data(ttl=300)
-def fetch_geojson():
-    r = requests.get(f"{API_URL}/geo/americas", timeout=15)
-    r.raise_for_status()
-    return r.json()
+
+
 
 
 col_title, col_btn = st.columns([5, 1])
@@ -84,10 +86,13 @@ with col_btn:
         st.rerun()
 
 try:
-    summary_data = fetch_json("/iqi/summary")
-    history_data = fetch_json("/iqi/history")
+    _t0 = time.perf_counter()
+    summary_data   = fetch_json("/iqi/summary")
+    history_data   = fetch_json("/iqi/history")
     subregion_data = fetch_json("/iqi/by-subregion")
-    geojson = fetch_geojson()
+    _t1 = time.perf_counter()
+    with st.sidebar:
+        st.caption(f"⏱️ fetch: {(_t1-_t0)*1000:.0f}ms")
 except requests.RequestException as e:
     st.error(f"❌ No se puede conectar con la API en `{API_URL}`. Error: {e}")
     st.stop()
@@ -100,7 +105,7 @@ if df.empty:
     st.warning("No hay datos en `/iqi/summary` todavía. Corre los loaders primero.")
     st.stop()
 
-df_hist["captured_at"] = pd.to_datetime(df_hist["captured_at"], utc=True).dt.tz_localize(None)
+df_hist["captured_at"] = pd.to_datetime(df_hist["captured_at"], format="ISO8601", utc=True).dt.tz_localize(None)
 df_hist["month"] = df_hist["captured_at"].dt.to_period("M").astype(str)
 
 # métrica visible: última medición si existe, si no el promedio
@@ -116,7 +121,6 @@ with st.sidebar:
     picked_sub = st.selectbox("Subregión", subregiones, index=subregiones.index(current_sub) if current_sub in subregiones else 0)
     if picked_sub != current_sub:
         select_subregion(None if picked_sub == "Todas" else picked_sub)
-        st.rerun()
 
     if st.session_state.selected_country:
         row = df[df["country"] == st.session_state.selected_country]
@@ -124,7 +128,6 @@ with st.sidebar:
         st.success(f"📍 País seleccionado: **{name}**")
         if st.button("Quitar selección", use_container_width=True):
             select_country(None)
-            st.rerun()
 
     st.divider()
     st.header("🔍 Consulta espacial")
@@ -135,13 +138,15 @@ with st.sidebar:
 
     if st.button("Ejecutar consulta", use_container_width=True):
         try:
-            r = requests.get(
-                f"{API_URL}/locations/radius",
-                params={"lat": ref_lat, "lon": ref_lon, "dist": radius_km},
-                timeout=10,
-            )
-            r.raise_for_status()
-            df_rad = pd.DataFrame(r.json())
+            _tr0 = time.perf_counter()
+            with st.spinner("Consultando PostGIS..."):
+                rad_data = fetch_json(
+                    "/locations/radius",
+                    params=(("lat", ref_lat), ("lon", ref_lon), ("dist", radius_km)),
+                )
+            _tr1 = time.perf_counter()
+            st.caption(f"⏱️ radius query: {(_tr1-_tr0)*1000:.0f}ms")
+            df_rad = pd.DataFrame(rad_data)
             if df_rad.empty:
                 st.info("Sin resultados en ese radio.")
             else:
@@ -164,108 +169,80 @@ if st.session_state.selected_subregion:
 # ── Layout principal: mapa | panel de análisis ──────────────────────────────
 col_map, col_stats = st.columns([3, 2], gap="medium")
 
-def latency_to_rgba(value: float, vmin: float, vmax: float) -> list[int]:
-    """Interpola verde → naranja → rojo según percentil de latencia."""
+def latency_color(value: float, vmin: float, vmax: float) -> str:
+    """Devuelve color hex interpolado verde→naranja→rojo."""
     if pd.isna(value) or vmax <= vmin:
-        return [128, 128, 128, 160]
-    t = (value - vmin) / (vmax - vmin)
-    t = min(max(t, 0.0), 1.0)
+        return "#808080"
+    t = min(max((value - vmin) / (vmax - vmin), 0.0), 1.0)
     if t < 0.5:
         t2 = t / 0.5
-        r = int(46 + (245 - 46) * t2)
+        r = int(46  + (245 - 46)  * t2)
         g = int(204 + (166 - 204) * t2)
-        b = int(113 + (35 - 113) * t2)
+        b = int(113 + (35  - 113) * t2)
     else:
         t2 = (t - 0.5) / 0.5
         r = int(245 + (231 - 245) * t2)
-        g = int(166 + (76 - 166) * t2)
-        b = int(35 + (60 - 35) * t2)
-    return [r, g, b, 235]
+        g = int(166 + (76  - 166) * t2)
+        b = int(35  + (60  - 35)  * t2)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+@st.cache_data(ttl=300)
+def build_folium_map(df_json: str, selected_country: str | None) -> str:
+    """Genera el HTML del mapa Folium — cacheado por datos + selección."""
+    import json
+    df_map = pd.read_json(df_json)
+    vmin = float(df_map["display_p50"].min())
+    vmax = float(df_map["display_p50"].max())
+
+    m = folium.Map(
+        location=[8.0, -75.0],
+        zoom_start=3,
+        tiles="CartoDB dark_matter",
+        width="100%",
+        height=520,
+    )
+
+    for _, row in df_map.iterrows():
+        if pd.isna(row["latitude"]) or pd.isna(row["longitude"]):
+            continue
+        color  = latency_color(row["display_p50"], vmin, vmax)
+        radius = 18 if row["country"] == selected_country else 10
+        weight = 3  if row["country"] == selected_country else 1
+
+        folium.CircleMarker(
+            location=[row["latitude"], row["longitude"]],
+            radius=radius,
+            color="#ffffff" if row["country"] == selected_country else color,
+            weight=weight,
+            fill=True,
+            fill_color=color,
+            fill_opacity=0.85,
+            tooltip=folium.Tooltip(
+                f"<b>{row['name']} ({row['country']})</b><br>"
+                f"p50: {row['display_p50']:.0f} ms<br>"
+                f"Mediciones: {int(row['measurement_count'])}",
+                sticky=True,
+            ),
+        ).add_to(m)
+
+    return m._repr_html_()
 
 
 with col_map:
     st.subheader("Mapa de latencia — América")
-    st.caption("Arrastra para moverte, scroll/pellizco para zoom · clic en un punto para filtrar el panel")
+    st.caption("Hover para ver detalles · selecciona países desde el Ranking")
 
-    vmin, vmax = float(df["display_p50"].min()), float(df["display_p50"].max())
+    needed_cols = ["country", "name", "latitude", "longitude", "display_p50",
+                   "measurement_count", "subregion", "is_focus"]
+    df_map_data = df_view[[c for c in needed_cols if c in df_view.columns]].copy()
 
-    df_map = df_view.copy()
-    df_map["fill_color"] = df_map["display_p50"].apply(lambda v: latency_to_rgba(v, vmin, vmax))
-    df_map["radius_m"] = df_map.apply(
-        lambda r: 65000 if r["country"] == st.session_state.selected_country
-        else (45000 if r["is_focus"] else 30000),
-        axis=1,
+    map_html = build_folium_map(
+        df_map_data.to_json(),
+        st.session_state.selected_country,
     )
-    df_map["line_color"] = df_map["country"].apply(
-        lambda c: [255, 255, 255, 255] if c == st.session_state.selected_country else [20, 20, 20, 120]
-    )
-    df_map["line_width"] = df_map["country"].apply(
-        lambda c: 3 if c == st.session_state.selected_country else 1
-    )
-
-    geo_layer = pdk.Layer(
-        "GeoJsonLayer",
-        id="fronteras",
-        data=geojson,
-        stroked=True,
-        filled=True,
-        get_fill_color=[124, 58, 237, 12],
-        get_line_color=[255, 255, 255, 55],
-        line_width_min_pixels=1,
-        pickable=False,
-    )
-
-    points_layer = pdk.Layer(
-        "ScatterplotLayer",
-        id="paises",
-        data=df_map,
-        get_position="[longitude, latitude]",
-        get_fill_color="fill_color",
-        get_line_color="line_color",
-        get_line_width="line_width",
-        line_width_min_pixels=1,
-        get_radius="radius_m",
-        radius_min_pixels=6,
-        radius_max_pixels=40,
-        pickable=True,
-        auto_highlight=True,
-        stroked=True,
-    )
-
-    view_state = pdk.ViewState(latitude=8.0, longitude=-75.0, zoom=2.3, pitch=0)
-
-    deck = pdk.Deck(
-        layers=[geo_layer, points_layer],
-        initial_view_state=view_state,
-        map_style=None,  # usa el estilo claro/oscuro del tema activo de Streamlit
-        tooltip={
-            "html": (
-                "<b>{name}</b> ({country})<br/>"
-                "Capital: {capital}<br/>"
-                "Latencia p50: {display_p50} ms<br/>"
-                "Mediciones: {measurement_count}"
-            ),
-            "style": {"backgroundColor": "#1a1a2e", "color": "white"},
-        },
-    )
-
-    map_event = st.pydeck_chart(
-        deck,
-        on_select="rerun",
-        selection_mode="single-object",
-        key="main_map",
-        height=560,
-    )
-
-    # Sync: clic en el mapa -> selecciona país
-    if map_event and map_event.selection and map_event.selection.get("objects", {}).get("paises"):
-        clicked = map_event.selection["objects"]["paises"][0]
-        clicked_code = clicked.get("country")
-        if clicked_code and clicked_code != st.session_state.selected_country:
-            select_country(clicked_code)
-            st.rerun()
-
-    st.caption("🟢 baja · 🟠 media · 🔴 alta latencia · el punto crece si el país es foco o está seleccionado")
+    st.components.v1.html(map_html, height=530, scrolling=False)
+    st.caption("🟢 baja · 🟠 media · 🔴 alta latencia")
 
 
 with col_stats:

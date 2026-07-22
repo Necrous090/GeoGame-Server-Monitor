@@ -1,17 +1,26 @@
 # docker-compose.override.yml
-#
-# Docker Compose fusiona este archivo con docker-compose.yaml automáticamente.
-# No es necesario modificar el compose original.
-#
-# Coloca este archivo en el mismo directorio que docker-compose.yaml (GeoGame/)
-# y luego: docker compose up -d --build
-#
-# Accesos tras levantar:
-#   FastAPI  → http://localhost:8000
-#   Swagger  → http://localhost:8000/docs
-#   Streamlit → http://localhost:8501
+# Reemplaza Mage AI con un scheduler Python simple (APScheduler).
+# Coloca este archivo junto a docker-compose.yaml y corre:
+#   docker compose up -d --build
 
 services:
+
+  # Scheduler Python — reemplaza Mage AI
+  scheduler:
+    build: ./scheduler
+    container_name: geogame_scheduler
+    environment:
+      CF_TOKEN: ${CF_TOKEN}
+      POSTGRES_HOST: geogame_postgis
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: magedb
+      POSTGRES_USER: mageuser
+      POSTGRES_PASSWORD: magepass
+    env_file:
+      - .env
+    restart: unless-stopped
+    depends_on:
+      - postgis
 
   geogame_api:
     build: ./api

@@ -2,6 +2,7 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import FileResponse
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 import os
 from datetime import datetime, date
 
@@ -18,9 +19,17 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Pool de conexiones: evita abrir/cerrar una conexión TCP nueva a Postgres
+# en cada request. minconn se mantiene siempre listo (sin handshake nuevo).
+db_pool = psycopg2.pool.SimpleConnectionPool(
+    minconn=2,
+    maxconn=10,
+    dsn=DATABASE_URL,
+)
+
 
 def _fetch(sql: str, params=None) -> list[dict]:
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = db_pool.getconn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql, params)
@@ -32,7 +41,7 @@ def _fetch(sql: str, params=None) -> list[dict]:
     except psycopg2.Error as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        conn.close()
+        db_pool.putconn(conn)
 
 
 @app.get("/", tags=["health"])
@@ -184,10 +193,12 @@ def locations_in_radius(
             ST_X(l.geom)   AS longitude,
             ST_Y(l.geom)   AS latitude,
             ROUND(
-                ST_Distance(
-                    l.geom::geography,
-                    ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography
-                ) / 1000.0,
+                (
+                    ST_Distance(
+                        l.geom::geography,
+                        ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography
+                    ) / 1000.0
+                )::numeric,
                 2
             )::float        AS distance_km
         FROM locations l
