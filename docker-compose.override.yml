@@ -1,14 +1,14 @@
 # docker-compose.override.yml
-# Reemplaza Mage AI con un scheduler Python simple (APScheduler).
-# Coloca este archivo junto a docker-compose.yaml y corre:
-#   docker compose up -d --build
+# Agrega el scheduler, la API y el dashboard al servicio PostGIS del compose base.
+# Uso: docker compose up -d --build
 
 services:
 
-  # Scheduler Python — reemplaza Mage AI
   scheduler:
     build: ./scheduler
     container_name: geogame_scheduler
+    env_file:
+      - .env
     environment:
       CF_TOKEN: ${CF_TOKEN}
       POSTGRES_HOST: geogame_postgis
@@ -16,8 +16,6 @@ services:
       POSTGRES_DB: magedb
       POSTGRES_USER: mageuser
       POSTGRES_PASSWORD: magepass
-    env_file:
-      - .env
     restart: unless-stopped
     depends_on:
       - postgis
@@ -27,11 +25,13 @@ services:
     container_name: geogame_api
     ports:
       - "8000:8000"
-    environment:
-      DATABASE_URL: postgresql://mageuser:magepass@geogame_postgis:5432/magedb
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgresql://mageuser:magepass@geogame_postgis:5432/magedb
     restart: unless-stopped
+    depends_on:
+      - postgis
 
   geogame_dashboard:
     build: ./dashboard
@@ -41,3 +41,5 @@ services:
     environment:
       API_URL: http://geogame_api:8000
     restart: unless-stopped
+    depends_on:
+      - geogame_api
